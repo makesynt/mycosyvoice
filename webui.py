@@ -14,6 +14,7 @@
 import os
 import sys
 import argparse
+from contextlib import contextmanager
 import gradio as gr
 import numpy as np
 import torch
@@ -115,6 +116,19 @@ def generate_audio(tts_text, mode_checkbox_group, sft_dropdown, prompt_text, pro
             yield (cosyvoice.sample_rate, i['tts_speech'].numpy().flatten())
 
 
+@contextmanager
+def _without_http_proxy():
+    """Gradio 启动时会用 httpx 探测 localhost；全局 http_proxy 会导致探测失败。"""
+    proxy_keys = ('http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY')
+    saved = {k: os.environ.pop(k, None) for k in proxy_keys}
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+
+
 def main():
     with gr.Blocks() as demo:
         gr.Markdown("### 代码库 [CosyVoice](https://github.com/FunAudioLLM/CosyVoice) \
@@ -151,7 +165,8 @@ def main():
                               outputs=[audio_output])
         mode_checkbox_group.change(fn=change_instruction, inputs=[mode_checkbox_group], outputs=[instruction_text])
     demo.queue(max_size=4, default_concurrency_limit=2)
-    demo.launch(server_name='0.0.0.0', server_port=args.port)
+    with _without_http_proxy():
+        demo.launch(server_name='0.0.0.0', server_port=args.port, share=args.share)
 
 
 if __name__ == '__main__':
@@ -163,6 +178,9 @@ if __name__ == '__main__':
                         type=str,
                         default='pretrained_models/CosyVoice2-0.5B',
                         help='local path or modelscope repo id')
+    parser.add_argument('--share',
+                        action='store_true',
+                        help='create a public gradio share link')
     args = parser.parse_args()
     cosyvoice = AutoModel(model_dir=args.model_dir)
 
