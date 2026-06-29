@@ -26,6 +26,11 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append('{}/../../..'.format(ROOT_DIR))
 sys.path.append('{}/../../../third_party/Matcha-TTS'.format(ROOT_DIR))
 from cosyvoice.cli.cosyvoice import AutoModel
+from cosyvoice.utils.common import set_all_random_seed
+
+# Align with webui.py defaults: fixed seed and Gradio-like peak normalization.
+INFERENCE_SEED = 0
+TARGET_PEAK = 0.88
 
 app = FastAPI()
 # set cross region allowance
@@ -37,9 +42,23 @@ app.add_middleware(
     allow_headers=["*"])
 
 
+def normalize_peak(speech: np.ndarray, target_peak: float = TARGET_PEAK) -> np.ndarray:
+    speech = np.asarray(speech, dtype=np.float32)
+    peak = np.max(np.abs(speech))
+    if peak > 1e-9:
+        speech = speech / peak * target_peak
+    return speech
+
+
+def collect_inference(infer_fn, *args, **kwargs):
+    set_all_random_seed(INFERENCE_SEED)
+    return list(infer_fn(*args, **kwargs))
+
+
 def generate_data(model_output):
     for i in model_output:
-        tts_audio = (i['tts_speech'].numpy() * (2 ** 15)).astype(np.int16).tobytes()
+        speech = normalize_peak(i['tts_speech'].numpy())
+        tts_audio = (speech * (2 ** 15)).astype(np.int16).tobytes()
         yield tts_audio
 
 
@@ -54,7 +73,7 @@ async def save_upload_wav(upload: UploadFile) -> str:
 
 def infer_with_prompt_wav(infer_fn, prompt_path, *args):
     try:
-        return list(infer_fn(*args, prompt_path))
+        return collect_inference(infer_fn, *args, prompt_path)
     finally:
         if os.path.exists(prompt_path):
             os.unlink(prompt_path)
@@ -63,7 +82,7 @@ def infer_with_prompt_wav(infer_fn, prompt_path, *args):
 @app.get("/inference_sft")
 @app.post("/inference_sft")
 async def inference_sft(tts_text: str = Form(), spk_id: str = Form()):
-    model_output = cosyvoice.inference_sft(tts_text, spk_id)
+    model_output = collect_inference(cosyvoice.inference_sft, tts_text, spk_id)
     return StreamingResponse(generate_data(model_output))
 
 
@@ -86,7 +105,7 @@ async def inference_cross_lingual(tts_text: str = Form(), prompt_wav: UploadFile
 @app.get("/inference_instruct")
 @app.post("/inference_instruct")
 async def inference_instruct(tts_text: str = Form(), spk_id: str = Form(), instruct_text: str = Form()):
-    model_output = cosyvoice.inference_instruct(tts_text, spk_id, instruct_text)
+    model_output = collect_inference(cosyvoice.inference_instruct, tts_text, spk_id, instruct_text)
     return StreamingResponse(generate_data(model_output))
 
 
